@@ -30,6 +30,6 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: appflux_cc-jar
+          name: appflux-cc.jar
           path: build/libs/*.jar
           if-no-files-found: error
