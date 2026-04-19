@@ -22,7 +22,7 @@ repositories {
     }
     maven {
         name = 'CC:Tweaked'
-        url = uri('https://squiddev.cc/maven/')
+        url = uri('https://maven.squiddev.cc/')
         content { includeGroup 'cc.tweaked' }
     }
     mavenCentral()
@@ -42,8 +42,10 @@ dependencies {
     // AE2 — public API, provided at runtime by the modpack
     compileOnly "org.appliedenergistics:appliedenergistics2:${ae2_version}"
 
-    // CC:Tweaked — API only, provided at runtime by the modpack
-    compileOnly "cc.tweaked:cc-tweaked-${minecraft_version}-neoforge-api:${cct_version}"
+    // CC:Tweaked — API only, provided at runtime by the modpack.
+    // Note: CC:Tweaked drops the "neoforge" naming in 1.21+; the "-forge-api"
+    // variant is the NeoForge one (stock Forge is unmaintained past 1.20).
+    compileOnly "cc.tweaked:cc-tweaked-${minecraft_version}-forge-api:${cct_version}"
 
     // NOTE: AppliedFlux classes (FluxKey, EnergyType, FluxKeyType, AFSingletons,
     // PartFluxAccessor, IFluxCell) are accessed via reflection so we don't take
