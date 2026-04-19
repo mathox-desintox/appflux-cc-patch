@@ -1,0 +1,49 @@
+modLoader="javafml"
+loaderVersion="${loader_version_range}"
+license="${mod_license}"
+
+[[mods]]
+    modId="appflux_cc"
+    version="${mod_version}"
+    displayName="${mod_name}"
+    authors="${mod_authors}"
+    description='''${mod_description}'''
+    # Server-only: clients don't need this mod. IGNORE_ALL_VERSION tells NeoForge
+    # to skip version comparison with the client during handshake, so a client
+    # running stock AppliedFlux can connect to a server that has this patch.
+    displayTest="IGNORE_ALL_VERSION"
+
+[[dependencies.appflux_cc]]
+    modId="neoforge"
+    type="REQUIRED"
+    versionRange="${neo_version_range}"
+    ordering="NONE"
+    side="SERVER"
+
+[[dependencies.appflux_cc]]
+    modId="minecraft"
+    type="REQUIRED"
+    versionRange="${minecraft_version_range}"
+    ordering="NONE"
+    side="SERVER"
+
+[[dependencies.appflux_cc]]
+    modId="appflux"
+    type="REQUIRED"
+    versionRange="[1.21-2.1.0-neoforge,)"
+    ordering="AFTER"
+    side="SERVER"
+
+[[dependencies.appflux_cc]]
+    modId="ae2"
+    type="REQUIRED"
+    versionRange="[19.2.2-beta,)"
+    ordering="AFTER"
+    side="SERVER"
+
+[[dependencies.appflux_cc]]
+    modId="computercraft"
+    type="REQUIRED"
+    versionRange="[1.117.0,)"
+    ordering="AFTER"
+    side="SERVER"

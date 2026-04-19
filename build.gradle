@@ -1,0 +1,76 @@
+plugins {
+    id 'java-library'
+    id 'eclipse'
+    id 'idea'
+    id 'net.neoforged.moddev' version '1.0.13'
+}
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = mod_id
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+repositories {
+    mavenLocal()
+    maven {
+        name = 'Modmaven'
+        url = uri('https://modmaven.dev/')
+    }
+    maven {
+        name = 'CC:Tweaked'
+        url = uri('https://squiddev.cc/maven/')
+        content { includeGroup 'cc.tweaked' }
+    }
+    mavenCentral()
+}
+
+neoForge {
+    version = project.neo_version
+
+    mods {
+        "${mod_id}" {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+dependencies {
+    // AE2 — public API, provided at runtime by the modpack
+    compileOnly "org.appliedenergistics:appliedenergistics2:${ae2_version}"
+
+    // CC:Tweaked — API only, provided at runtime by the modpack
+    compileOnly "cc.tweaked:cc-tweaked-${minecraft_version}-neoforge-api:${cct_version}"
+
+    // NOTE: AppliedFlux classes (FluxKey, EnergyType, FluxKeyType, AFSingletons,
+    // PartFluxAccessor, IFluxCell) are accessed via reflection so we don't take
+    // a compile-time dependency on a mod whose jar isn't on Maven.
+}
+
+tasks.withType(ProcessResources).configureEach {
+    var replaceProperties = [
+        minecraft_version      : minecraft_version,
+        minecraft_version_range: minecraft_version_range,
+        neo_version            : neo_version,
+        neo_version_range      : neo_version_range,
+        loader_version_range   : loader_version_range,
+        mod_id                 : mod_id,
+        mod_name               : mod_name,
+        mod_license            : mod_license,
+        mod_version            : mod_version,
+        mod_authors            : mod_authors,
+        mod_description        : mod_description,
+    ]
+    inputs.properties replaceProperties
+
+    filesMatching(['META-INF/neoforge.mods.toml']) {
+        expand replaceProperties
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}

@@ -1,0 +1,34 @@
+                   GNU LESSER GENERAL PUBLIC LICENSE
+                       Version 3, 29 June 2007
+
+ Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>
+ Everyone is permitted to copy and distribute verbatim copies
+ of this license document, but changing it is not allowed.
+
+
+  This version of the GNU Lesser General Public License incorporates
+the terms and conditions of version 3 of the GNU General Public
+License, supplemented by the additional permissions listed below.
+
+  Full text: https://www.gnu.org/licenses/lgpl-3.0.txt
+  Full GPL-3.0 text referenced by LGPL: https://www.gnu.org/licenses/gpl-3.0.txt
+
+────────────────────────────────────────────────────────────────────────
+
+AppliedFlux CC Patch — server-side companion mod adding long-precision
+ComputerCraft peripheral methods to AppliedFlux's flux accessor.
+
+Copyright (C) 2026 mathox
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Lesser General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Lesser General Public License for more details.
+
+You should have received a copy of the GNU Lesser General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
