@@ -67,14 +67,20 @@ public final class FluxAccessorPeripheral implements IPeripheral {
     private volatile boolean cachedOnline   = false;
     private volatile long    cachedServerTick = 0L;
 
-    // Ring buffer of (stored, serverTick) for the last RING_SIZE MC
-    // ticks. RING_SIZE = 600 = 30 seconds, enough for any short-
-    // window rate calc we're likely to ask for from Lua. Writer is
-    // the tick handler (server thread); readers are Lua threads, so
-    // we synchronise on ringLock for every read/write.
+    // Ring buffer of (stored, serverTick, ts_ms) for the last
+    // RING_SIZE MC ticks. RING_SIZE = 600 = 30 seconds, enough for
+    // any short-window rate calc we're likely to ask for from Lua.
+    // We keep both the server tick number (for tick-count-based
+    // rate math) and the wall-clock millisecond timestamp (so Lua
+    // clients can line up the samples against os.epoch("utc")
+    // without maintaining their own tick-to-ms mapping).
+    //
+    // Writer is the tick handler (server thread); readers are Lua
+    // threads, so we synchronise on ringLock for every read/write.
     private static final int RING_SIZE = 600;
     private final long[] ringStored = new long[RING_SIZE];
     private final long[] ringTick   = new long[RING_SIZE];
+    private final long[] ringTsMs   = new long[RING_SIZE];
     private int ringHead  = 0;
     private int ringCount = 0;
     private final Object ringLock = new Object();
@@ -119,9 +125,11 @@ public final class FluxAccessorPeripheral implements IPeripheral {
         IGridNode node = host.getActionableNode();
         cachedOnline = node != null && node.isOnline();
 
+        long ts = System.currentTimeMillis();
         synchronized (ringLock) {
             ringStored[ringHead] = stored;
             ringTick[ringHead]   = serverTick;
+            ringTsMs[ringHead]   = ts;
             ringHead = (ringHead + 1) % RING_SIZE;
             if (ringCount < RING_SIZE) ringCount++;
         }
@@ -321,6 +329,45 @@ public final class FluxAccessorPeripheral implements IPeripheral {
         long[] d = ringLookback(ticks);
         if (d == null) return 0.0;
         return (double) d[1] / (double) d[0];
+    }
+
+    /**
+     * Return the last `lookbackTicks` ring samples as an ordered list
+     * of {stored, tick, ts} tables (oldest -> newest). `stored` is FE
+     * as a double, `tick` is the MC server tick number the sample
+     * was taken at, `ts` is the wall-clock millisecond timestamp
+     * (System.currentTimeMillis) at that tick - Lua clients can line
+     * this up directly against os.epoch("utc") without maintaining
+     * their own tick-to-ms mapping.
+     *
+     * Returns an empty list if the ring hasn't populated yet (e.g.
+     * the peripheral was just instantiated and the first server tick
+     * hasn't fired). Clients should treat empty-list as "no data;
+     * skip this broadcast" rather than "zero stored".
+     *
+     * This replaces the need for tick-by-tick polling on the CC
+     * side: instead of calling getCachedEnergy() 20 times per second
+     * each with its own mainThread-or-not latency, the collector can
+     * fetch the whole window of samples in a single call right
+     * before it broadcasts. No tick jitter, no cold-start race.
+     */
+    @LuaFunction
+    public final List<Map<String, Object>> getStoredHistory(Optional<Integer> lookbackTicks) {
+        int ticks = clampLookback(lookbackTicks.orElse(20));
+        List<Map<String, Object>> out = new ArrayList<>();
+        synchronized (ringLock) {
+            if (ringCount < 1) return out;
+            int available = Math.min(ticks, ringCount);
+            for (int i = available - 1; i >= 0; i--) {
+                int idx = (ringHead - 1 - i + RING_SIZE) % RING_SIZE;
+                Map<String, Object> entry = new HashMap<>();
+                entry.put("stored", (double) ringStored[idx]);
+                entry.put("tick",   (double) ringTick[idx]);
+                entry.put("ts",     (double) ringTsMs[idx]);
+                out.add(entry);
+            }
+        }
+        return out;
     }
 
     private static int clampLookback(int ticks) {
