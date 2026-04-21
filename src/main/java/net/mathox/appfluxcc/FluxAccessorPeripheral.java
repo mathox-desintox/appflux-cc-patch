@@ -20,11 +20,14 @@ import net.neoforged.neoforge.items.IItemHandler;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.WeakHashMap;
 
 /**
  * ComputerCraft peripheral attached to an AppliedFlux flux accessor — works
@@ -49,8 +52,123 @@ public final class FluxAccessorPeripheral implements IPeripheral {
 
     private final IActionHost host;
 
+    // ─── Per-tick cache ──────────────────────────────────────────────
+    //
+    // All the fields below are populated once per MC server tick by
+    // `onServerTick`, which is called from a NeoForge tick handler
+    // running on the server thread. Lua threads then read them via
+    // the non-mainThread `getCached*` / `getRate*` methods - instant
+    // and thread-safe via volatile, so the CC computer can sample at
+    // its full 20 Hz tick rate instead of being throttled to ~8-10
+    // Hz by mainThread=true round-trips on every read.
+
+    private volatile long    cachedStored   = 0L;
+    private volatile long    cachedCapacity = 0L;
+    private volatile boolean cachedOnline   = false;
+    private volatile long    cachedServerTick = 0L;
+
+    // Ring buffer of (stored, serverTick) for the last RING_SIZE MC
+    // ticks. RING_SIZE = 600 = 30 seconds, enough for any short-
+    // window rate calc we're likely to ask for from Lua. Writer is
+    // the tick handler (server thread); readers are Lua threads, so
+    // we synchronise on ringLock for every read/write.
+    private static final int RING_SIZE = 600;
+    private final long[] ringStored = new long[RING_SIZE];
+    private final long[] ringTick   = new long[RING_SIZE];
+    private int ringHead  = 0;
+    private int ringCount = 0;
+    private final Object ringLock = new Object();
+
+    // Weak registry of live peripherals. The tick handler iterates
+    // this every tick to snapshot each one; WeakHashMap lets an
+    // instance GC naturally when CC-Tweaked drops its reference
+    // (e.g. computer disconnected / accessor broken).
+    private static final Set<FluxAccessorPeripheral> ACTIVE =
+        Collections.synchronizedSet(
+            Collections.newSetFromMap(new WeakHashMap<>()));
+
     public FluxAccessorPeripheral(IActionHost host) {
         this.host = host;
+        ACTIVE.add(this);
+    }
+
+    // ─── Server-tick hook ────────────────────────────────────────────
+
+    /**
+     * Snapshot current grid state into the cache + ring for one
+     * peripheral. Called by the global tick handler on the server
+     * thread - no yielding, no scheduling. AE2 reads here are safe
+     * because we ARE the server thread.
+     */
+    public void onServerTick(long serverTick) {
+        IStorageService storage = storage();
+        AEKey key = AppFluxBridge.feKey();
+        if (storage == null || key == null) {
+            cachedOnline = false;
+            return;
+        }
+        long stored = storage.getCachedInventory().get(key);
+        long headroom = Math.max(0L, Long.MAX_VALUE - 1L - stored);
+        long free = storage.getInventory().insert(
+            key, headroom, Actionable.SIMULATE, IActionSource.ofMachine(host));
+        long capacity = stored + free;
+
+        cachedStored     = stored;
+        cachedCapacity   = capacity;
+        cachedServerTick = serverTick;
+        IGridNode node = host.getActionableNode();
+        cachedOnline = node != null && node.isOnline();
+
+        synchronized (ringLock) {
+            ringStored[ringHead] = stored;
+            ringTick[ringHead]   = serverTick;
+            ringHead = (ringHead + 1) % RING_SIZE;
+            if (ringCount < RING_SIZE) ringCount++;
+        }
+    }
+
+    /**
+     * Entry point for the mod's ServerTickEvent listener. Snapshots
+     * everyone currently in the active registry. Exceptions from
+     * any individual peripheral are swallowed so one misbehaving
+     * grid doesn't wedge the rest.
+     */
+    public static void tickAll(long serverTick) {
+        FluxAccessorPeripheral[] snapshot;
+        synchronized (ACTIVE) {
+            snapshot = ACTIVE.toArray(new FluxAccessorPeripheral[0]);
+        }
+        for (FluxAccessorPeripheral p : snapshot) {
+            try {
+                p.onServerTick(serverTick);
+            } catch (Throwable t) {
+                AppFluxCC.LOGGER.debug("[appflux_cc] tick snapshot failed", t);
+            }
+        }
+    }
+
+    /**
+     * @return (dt_ticks, dv) from the ring: newest sample back to the
+     * first sample whose tick is <= (newest - lookbackTicks). Returns
+     * null if the ring doesn't have enough data yet.
+     */
+    private long[] ringLookback(int lookbackTicks) {
+        synchronized (ringLock) {
+            if (ringCount < 2) return null;
+            int newestIdx = (ringHead - 1 + RING_SIZE) % RING_SIZE;
+            long newestTick  = ringTick[newestIdx];
+            long newestValue = ringStored[newestIdx];
+            long targetTick  = newestTick - lookbackTicks;
+            int pastIdx = newestIdx;
+            for (int i = 1; i < ringCount; i++) {
+                int idx = (newestIdx - i + RING_SIZE) % RING_SIZE;
+                pastIdx = idx;
+                if (ringTick[idx] <= targetTick) break;
+            }
+            long dt = newestTick - ringTick[pastIdx];
+            if (dt <= 0) return null;
+            return new long[] { dt, newestValue - ringStored[pastIdx] };
+        }
     }
 
     @Override
@@ -131,6 +249,84 @@ public final class FluxAccessorPeripheral implements IPeripheral {
     public final boolean isOnline() {
         IGridNode node = host.getActionableNode();
         return node != null && node.isOnline();
+    }
+
+    // ─── Cached (non-mainThread) fast-path API ───────────────────────
+    //
+    // These read the cache populated by the server-tick handler.
+    // They do NOT schedule onto the server thread - so each call
+    // returns instantly, without the 50ms mainThread round-trip that
+    // caps every `mainThread=true` peripheral method at 20 Hz best
+    // case. A CC computer can therefore sample at its full
+    // `sleep(0.05)` cadence instead of being throttled to ~8 Hz.
+    //
+    // Values reflect the STATE AT THE LAST COMPLETED MC TICK. For FE
+    // (which changes per tick), that's the freshest value that was
+    // ever observable anywhere else in the mod.
+
+    /** Latest cached stored FE as a Lua double (precise to ~9 PFE). */
+    @LuaFunction
+    public final double getCachedEnergy() { return (double) cachedStored; }
+
+    /** Latest cached stored FE as a full-precision decimal string. */
+    @LuaFunction
+    public final String getCachedEnergyString() { return Long.toString(cachedStored); }
+
+    /** Latest cached network capacity (stored + free) as a double. */
+    @LuaFunction
+    public final double getCachedCapacity() { return (double) cachedCapacity; }
+
+    @LuaFunction
+    public final String getCachedCapacityString() { return Long.toString(cachedCapacity); }
+
+    /** Latest cached "grid online" flag. */
+    @LuaFunction
+    public final boolean getCachedOnline() { return cachedOnline; }
+
+    /**
+     * The MC server tick number at which the cache was last updated.
+     * Useful for Lua-side staleness detection if the server stalls.
+     */
+    @LuaFunction
+    public final double getCachedTick() { return (double) cachedServerTick; }
+
+    /**
+     * Average FE change per SECOND over the last `lookbackTicks`
+     * server ticks (default 20 = 1 second). Computed entirely server-
+     * side off the tick ring buffer, so no CC-side bucketing /
+     * filtering is needed to get a stable rate.
+     *
+     * @param lookbackTicks window width in ticks (1..600). Values
+     *        outside that range are clamped; missing / zero-default
+     *        → 20.
+     * @return FE per real second (MC has 20 ticks/sec). Returns 0 if
+     *         the ring hasn't accumulated enough samples yet.
+     */
+    @LuaFunction
+    public final double getRateFEPerSecond(Optional<Integer> lookbackTicks) {
+        int ticks = clampLookback(lookbackTicks.orElse(20));
+        long[] d = ringLookback(ticks);
+        if (d == null) return 0.0;
+        // 20 ticks == 1 second
+        return (double) d[1] / ((double) d[0] / 20.0);
+    }
+
+    /**
+     * Average FE change per TICK over the last `lookbackTicks` ticks
+     * (default 20). Same data as getRateFEPerSecond, divided by 20.
+     */
+    @LuaFunction
+    public final double getRateFEPerTick(Optional<Integer> lookbackTicks) {
+        int ticks = clampLookback(lookbackTicks.orElse(20));
+        long[] d = ringLookback(ticks);
+        if (d == null) return 0.0;
+        return (double) d[1] / (double) d[0];
+    }
+
+    private static int clampLookback(int ticks) {
+        if (ticks < 1) return 1;
+        if (ticks > RING_SIZE) return RING_SIZE;
+        return ticks;
     }
 
     // ─── Network-wide cell enumeration ────────────────────────────────────
